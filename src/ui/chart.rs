@@ -5,8 +5,8 @@ use ratatui::{
     Frame,
 };
 
-use crate::model::VagrantEnvironment;
 use super::theme;
+use crate::model::VagrantEnvironment;
 
 pub fn render(frame: &mut Frame, area: Rect, environments: &[VagrantEnvironment]) {
     let direction = if area.width >= 100 {

@@ -5,8 +5,8 @@ use ratatui::style::{Color, Modifier, Style};
 pub const ICON_VAGRANT: &str = "\u{2601}"; // cloud
 pub const ICON_RUNNING: &str = "\u{f111}";
 pub const ICON_STOPPED: &str = "\u{f28d}";
-pub const ICON_SAVED: &str = "\u{f04c}";   // pause
-pub const ICON_DEAD: &str = "\u{f071}";     // warning
+pub const ICON_SAVED: &str = "\u{f04c}"; // pause
+pub const ICON_DEAD: &str = "\u{f071}"; // warning
 pub const ICON_CPU: &str = "\u{f2db}";
 pub const ICON_MEMORY: &str = "\u{efc5}";
 pub const ICON_NETWORK: &str = "\u{f0ac}";
@@ -53,9 +53,7 @@ pub fn style_muted() -> Style {
 /// Color-coded style for CPU percentage.
 pub fn style_cpu(percent: f64) -> Style {
     if percent > 80.0 {
-        Style::default()
-            .fg(DANGER)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(DANGER).add_modifier(Modifier::BOLD)
     } else if percent > 50.0 {
         Style::default().fg(WARNING)
     } else {
@@ -66,9 +64,7 @@ pub fn style_cpu(percent: f64) -> Style {
 /// Color-coded style for memory usage percentage.
 pub fn style_mem(percent: f64) -> Style {
     if percent > 90.0 {
-        Style::default()
-            .fg(DANGER)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(DANGER).add_modifier(Modifier::BOLD)
     } else if percent > 70.0 {
         Style::default().fg(WARNING)
     } else {

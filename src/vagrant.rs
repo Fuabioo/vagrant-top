@@ -152,8 +152,7 @@ fn virsh_command(provider: &ProviderSupport) -> tokio::process::Command {
 ///
 /// Returns Unix epoch seconds, or None if the file doesn't exist / can't be read.
 fn get_domain_start_time(domain_name: &str) -> Option<u64> {
-    let pid_path = PathBuf::from("/run/libvirt/qemu")
-        .join(format!("{}.pid", domain_name));
+    let pid_path = PathBuf::from("/run/libvirt/qemu").join(format!("{}.pid", domain_name));
 
     let metadata = std::fs::metadata(&pid_path).ok()?;
 
@@ -198,7 +197,7 @@ fn read_machine_index(path: &Path) -> Result<Vec<VmInfo>> {
 
     let mut vms = Vec::new();
 
-    for (_id, entry) in &index.machines {
+    for entry in index.machines.values() {
         let vagrantfile_path = entry.vagrantfile_path.clone().unwrap_or_default();
         let environment = Path::new(&vagrantfile_path)
             .file_name()
@@ -334,8 +333,7 @@ async fn virsh_has_domains(uri: &str) -> bool {
         return false;
     };
 
-    output.status.success()
-        && String::from_utf8_lossy(&output.stdout).contains("Domain: '")
+    output.status.success() && String::from_utf8_lossy(&output.stdout).contains("Domain: '")
 }
 
 /// Resolve the libvirt connection URI.
@@ -358,16 +356,17 @@ async fn resolve_virsh_uri() -> Option<String> {
 
     // 3. Even if no domains are running right now on system, prefer it if it connects
     if virsh_version_ok(Some(system_uri)).await {
-        tracing::info!("Probed {} — connectable (no domains yet), using it", system_uri);
+        tracing::info!(
+            "Probed {} — connectable (no domains yet), using it",
+            system_uri
+        );
         return Some(system_uri.to_string());
     }
 
     // 4. Last resort: ask virsh for its default (likely qemu:///session)
     let output = tokio::time::timeout(
         Duration::from_secs(5),
-        tokio::process::Command::new("virsh")
-            .arg("uri")
-            .output(),
+        tokio::process::Command::new("virsh").arg("uri").output(),
     )
     .await
     .ok()?
@@ -414,7 +413,10 @@ fn parse_domstats_output(output: &str) -> Result<HashMap<String, DomStats>> {
     let mut block_count: u64 = 0;
 
     for line in output.lines() {
-        if let Some(name) = line.strip_prefix("Domain: '").and_then(|s| s.strip_suffix('\'')) {
+        if let Some(name) = line
+            .strip_prefix("Domain: '")
+            .and_then(|s| s.strip_suffix('\''))
+        {
             // Save previous domain if any
             if let Some(domain) = current_domain.take() {
                 result.insert(domain, current_stats);
@@ -597,13 +599,10 @@ pub async fn fetch_environments(
                 let cpu_percent = {
                     let mut cpu_guard = lock_cpu_prev();
                     let map = cpu_guard.get_or_insert_with(HashMap::new);
-                    let percent = if let Some(&(prev_time, prev_instant)) =
-                        map.get(&vm.domain_name)
+                    let percent = if let Some(&(prev_time, prev_instant)) = map.get(&vm.domain_name)
                     {
                         let cpu_delta_ns = s.cpu_time.saturating_sub(prev_time);
-                        let wall_delta_ns = now
-                            .duration_since(prev_instant)
-                            .as_nanos() as u64;
+                        let wall_delta_ns = now.duration_since(prev_instant).as_nanos() as u64;
                         if wall_delta_ns > 0 {
                             (cpu_delta_ns as f64 / wall_delta_ns as f64) * 100.0
                         } else {
@@ -617,10 +616,7 @@ pub async fn fetch_environments(
                 };
 
                 // Memory: prefer balloon.rss, fallback to balloon.current
-                let mem_bytes = s
-                    .balloon_rss
-                    .unwrap_or(s.balloon_current)
-                    * 1024; // KiB -> bytes
+                let mem_bytes = s.balloon_rss.unwrap_or(s.balloon_current) * 1024; // KiB -> bytes
                 let mem_limit = s.balloon_maximum * 1024;
 
                 (

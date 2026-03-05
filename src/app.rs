@@ -179,8 +179,7 @@ impl App {
 
     fn select_last(&mut self) {
         if !self.environments.is_empty() {
-            self.table_state
-                .select(Some(self.environments.len() - 1));
+            self.table_state.select(Some(self.environments.len() - 1));
         }
     }
 
@@ -195,8 +194,7 @@ impl App {
         if self.environments.is_empty() {
             self.table_state.select(Some(0));
         } else if self.selected() >= self.environments.len() {
-            self.table_state
-                .select(Some(self.environments.len() - 1));
+            self.table_state.select(Some(self.environments.len() - 1));
         }
     }
 

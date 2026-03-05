@@ -30,9 +30,7 @@ pub fn render(frame: &mut Frame, area: Rect, show_help: bool) {
         }
         spans.push(Span::styled(
             key.to_string(),
-            Style::default()
-                .fg(PRIMARY)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(PRIMARY).add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
             format!(" {}", desc),

@@ -17,6 +17,7 @@ use crate::model::{VagrantEnvironment, ViewMode};
 use crate::vagrant::ConnectionState;
 
 /// Render the entire UI.
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     environments: &[VagrantEnvironment],
@@ -33,12 +34,12 @@ pub fn render(
     let constraints = if hide_footer {
         vec![
             Constraint::Length(1), // header
-            Constraint::Min(5),   // main content
+            Constraint::Min(5),    // main content
         ]
     } else {
         vec![
             Constraint::Length(1), // header
-            Constraint::Min(5),   // main content
+            Constraint::Min(5),    // main content
             Constraint::Length(1), // footer
         ]
     };
