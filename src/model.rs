@@ -1,4 +1,4 @@
-use std::time::{Duration, Instant};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 /// Status of a Vagrant environment, derived from its VMs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,7 +33,10 @@ pub struct VmSnapshot {
     pub net_tx: u64,
     pub blk_read: u64,
     pub blk_write: u64,
-    pub started_at: Option<Instant>,
+    /// Real VM start time as Unix epoch seconds, from the libvirt PID file
+    /// at /run/libvirt/qemu/<domain>.pid (birth/mtime).
+    /// None if the PID file is not readable or the VM is not running.
+    pub started_at: Option<u64>,
 }
 
 /// Aggregated view of a Vagrant environment (one Vagrantfile).
@@ -53,9 +56,11 @@ pub struct VagrantEnvironment {
     pub total_net_tx: u64,
     pub total_blk_read: u64,
     pub total_blk_write: u64,
-    /// Oldest running VM's first-observed time.
-    pub oldest_started_at: Option<Instant>,
-    /// Most recent state change observed.
+    /// Oldest running VM's start time (Unix epoch seconds).
+    /// Determines the TIME-UP column — how long the environment has been up.
+    pub oldest_started_at: Option<u64>,
+    /// Most recent state change observed (in-process Instant).
+    /// Determines the LAST-CHG column — resets when vagrant-status restarts.
     pub newest_started_at: Option<Instant>,
 }
 
@@ -71,15 +76,12 @@ impl VagrantEnvironment {
         let total_blk_read: u64 = vms.iter().map(|v| v.blk_read).sum();
         let total_blk_write: u64 = vms.iter().map(|v| v.blk_write).sum();
 
-        let running_starts: Vec<Instant> = vms
+        // TIME-UP: oldest running VM's real start time (from PID file)
+        let oldest_started_at = vms
             .iter()
             .filter(|v| v.running)
             .filter_map(|v| v.started_at)
-            .collect();
-        let oldest_started_at = running_starts.iter().min().copied();
-
-        let all_starts: Vec<Instant> = vms.iter().filter_map(|v| v.started_at).collect();
-        let newest_started_at = all_starts.iter().max().copied();
+            .min();
 
         let status = Self::derive_status(&vms);
 
@@ -97,7 +99,8 @@ impl VagrantEnvironment {
             total_blk_read,
             total_blk_write,
             oldest_started_at,
-            newest_started_at,
+            // LAST-CHG set by caller from the state-change tracker
+            newest_started_at: None,
         }
     }
 
@@ -148,10 +151,23 @@ pub enum ViewMode {
     Chart,
 }
 
-/// Format a duration as a human-readable string.
-pub fn uptime_str(elapsed: Duration) -> String {
-    let total_secs = elapsed.as_secs();
+/// Format an epoch-seconds start time as a human-readable uptime string.
+/// Computes duration from `epoch_secs` to now.
+pub fn uptime_str_from_epoch(epoch_secs: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let elapsed_secs = now.saturating_sub(epoch_secs);
+    format_duration_secs(elapsed_secs)
+}
 
+/// Format an Instant-based duration as a human-readable string.
+pub fn uptime_str_from_instant(instant: Instant) -> String {
+    format_duration_secs(instant.elapsed().as_secs())
+}
+
+fn format_duration_secs(total_secs: u64) -> String {
     let days = total_secs / 86400;
     let hours = (total_secs % 86400) / 3600;
     let mins = (total_secs % 3600) / 60;

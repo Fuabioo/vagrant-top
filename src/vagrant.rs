@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -16,13 +16,14 @@ static VM_CACHE: Mutex<Option<Vec<VmInfo>>> = Mutex::new(None);
 /// Previous CPU time + wall-clock instant per domain, for delta computation.
 static CPU_PREV: Mutex<Option<HashMap<String, (u64, Instant)>>> = Mutex::new(None);
 
-/// First-observed-running time per domain (resets on restart).
-static UPTIME_TRACKER: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
-
-/// Last state per domain, for detecting state transitions.
+/// Last state per domain, for detecting state transitions (LAST-CHG column).
+/// Keyed by domain name. On the first observation, the state is recorded but
+/// no "change" is emitted — LAST-CHG only fires on actual transitions.
 static LAST_STATE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
-/// Last state change time per domain.
+/// Last state change time per domain (in-process Instant).
+/// Resets when vagrant-status restarts. Only updated on actual state transitions,
+/// NOT on first observation (avoids showing "0m" for every VM at startup).
 static LAST_CHANGE: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 
 // ── Machine index types ─────────────────────────────────────────────────────
@@ -102,6 +103,11 @@ struct DomStats {
 #[derive(Debug, Clone)]
 pub struct ProviderSupport {
     pub has_virsh: bool,
+    /// Resolved libvirt connection URI (e.g. "qemu:///system").
+    /// Passed as `--connect <uri>` to every virsh call so we don't depend
+    /// on LIBVIRT_DEFAULT_URI being in the environment (which may be absent
+    /// when launched from HUDs, systemd units, or other minimal contexts).
+    pub virsh_uri: Option<String>,
 }
 
 // ── Mutex helpers ───────────────────────────────────────────────────────────
@@ -114,16 +120,49 @@ fn lock_cpu_prev() -> std::sync::MutexGuard<'static, Option<HashMap<String, (u64
     CPU_PREV.lock().unwrap_or_else(|p| p.into_inner())
 }
 
-fn lock_uptime() -> std::sync::MutexGuard<'static, Option<HashMap<String, Instant>>> {
-    UPTIME_TRACKER.lock().unwrap_or_else(|p| p.into_inner())
-}
-
 fn lock_last_state() -> std::sync::MutexGuard<'static, Option<HashMap<String, String>>> {
     LAST_STATE.lock().unwrap_or_else(|p| p.into_inner())
 }
 
 fn lock_last_change() -> std::sync::MutexGuard<'static, Option<HashMap<String, Instant>>> {
     LAST_CHANGE.lock().unwrap_or_else(|p| p.into_inner())
+}
+
+/// Build a virsh Command with the resolved connection URI.
+///
+/// Always passes `--connect <uri>` explicitly rather than relying on the
+/// `LIBVIRT_DEFAULT_URI` env var, because the parent process (e.g. dev-hud,
+/// systemd, or a Wayland compositor) may not have that variable set.
+/// Without it, virsh defaults to `qemu:///session` which is the wrong daemon.
+fn virsh_command(provider: &ProviderSupport) -> tokio::process::Command {
+    let mut cmd = tokio::process::Command::new("virsh");
+    if let Some(uri) = &provider.virsh_uri {
+        cmd.args(["--connect", uri]);
+    }
+    cmd
+}
+
+// ── VM start time from PID file ─────────────────────────────────────────────
+
+/// Get the real VM start time by reading the libvirt PID file's modification time.
+///
+/// Libvirt creates `/run/libvirt/qemu/<domain>.pid` when a domain starts.
+/// The file's mtime (and birth time) correspond to the VM boot moment.
+/// This file is world-readable (0644), so no root access needed.
+///
+/// Returns Unix epoch seconds, or None if the file doesn't exist / can't be read.
+fn get_domain_start_time(domain_name: &str) -> Option<u64> {
+    let pid_path = PathBuf::from("/run/libvirt/qemu")
+        .join(format!("{}.pid", domain_name));
+
+    let metadata = std::fs::metadata(&pid_path).ok()?;
+
+    // Prefer mtime (always available on Linux); it equals the birth time for
+    // PID files since libvirt writes them once at domain startup and never modifies them.
+    let mtime = metadata.modified().ok()?;
+    let epoch_secs = mtime.duration_since(UNIX_EPOCH).ok()?.as_secs();
+
+    Some(epoch_secs)
 }
 
 // ── Layer 1: Machine index ──────────────────────────────────────────────────
@@ -203,11 +242,16 @@ fn derive_domain_name(vagrantfile_path: &str, vm_name: &str) -> String {
 
 /// Fallback: resolve domain name from UUID file via `virsh domname`.
 #[allow(dead_code)]
-async fn resolve_domain_via_uuid(local_data_path: &str, vm_name: &str, provider: &str) -> Option<String> {
+async fn resolve_domain_via_uuid(
+    provider: &ProviderSupport,
+    local_data_path: &str,
+    vm_name: &str,
+    vm_provider: &str,
+) -> Option<String> {
     let id_path = PathBuf::from(local_data_path)
         .join("machines")
         .join(vm_name)
-        .join(provider)
+        .join(vm_provider)
         .join("id");
 
     let uuid = tokio::fs::read_to_string(&id_path).await.ok()?;
@@ -216,15 +260,13 @@ async fn resolve_domain_via_uuid(local_data_path: &str, vm_name: &str, provider:
         return None;
     }
 
-    let output = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::process::Command::new("virsh")
-            .args(["domname", uuid])
-            .output(),
-    )
-    .await
-    .ok()?
-    .ok()?;
+    let mut cmd = virsh_command(provider);
+    cmd.args(["domname", uuid]);
+
+    let output = tokio::time::timeout(Duration::from_secs(5), cmd.output())
+        .await
+        .ok()?
+        .ok()?;
 
     if output.status.success() {
         let name = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -238,32 +280,119 @@ async fn resolve_domain_via_uuid(local_data_path: &str, vm_name: &str, provider:
 
 // ── Layer 2: Provider queries ───────────────────────────────────────────────
 
-/// Detect available providers by running `virsh version`.
+/// Detect available providers and resolve the libvirt connection URI.
+///
+/// Resolution order for URI:
+/// 1. `$LIBVIRT_DEFAULT_URI` environment variable (trusted, used as-is)
+/// 2. Probe: try `qemu:///system` first (where vagrant-libvirt VMs live),
+///    then fall back to `virsh uri` default.
+///
+/// The probe is necessary because without LIBVIRT_DEFAULT_URI, `virsh uri`
+/// returns `qemu:///session` (user daemon), which has no vagrant VMs.
+/// Vagrant-libvirt always uses the system daemon.
 pub async fn detect_providers() -> ProviderSupport {
-    let has_virsh = tokio::time::timeout(
-        Duration::from_secs(5),
-        tokio::process::Command::new("virsh")
-            .arg("version")
-            .output(),
-    )
-    .await
-    .map(|r| r.map(|o| o.status.success()).unwrap_or(false))
-    .unwrap_or(false);
+    let virsh_uri = resolve_virsh_uri().await;
 
-    ProviderSupport { has_virsh }
+    let has_virsh = if let Some(uri) = &virsh_uri {
+        virsh_version_ok(Some(uri)).await
+    } else {
+        virsh_version_ok(None).await
+    };
+
+    if has_virsh {
+        tracing::info!("virsh available, URI: {:?}", virsh_uri);
+    } else {
+        tracing::warn!("virsh not available or failed with URI: {:?}", virsh_uri);
+    }
+
+    ProviderSupport {
+        has_virsh,
+        virsh_uri,
+    }
 }
 
-/// Fetch domstats for all running domains in a single virsh call.
-async fn fetch_all_domstats() -> Result<HashMap<String, DomStats>> {
+/// Run `virsh version` with an optional --connect URI. Returns true if it succeeds.
+async fn virsh_version_ok(uri: Option<&str>) -> bool {
+    let mut cmd = tokio::process::Command::new("virsh");
+    if let Some(u) = uri {
+        cmd.args(["--connect", u]);
+    }
+    cmd.arg("version");
+
+    tokio::time::timeout(Duration::from_secs(5), cmd.output())
+        .await
+        .map(|r| r.map(|o| o.status.success()).unwrap_or(false))
+        .unwrap_or(false)
+}
+
+/// Check if `virsh domstats` returns any domains with the given URI.
+async fn virsh_has_domains(uri: &str) -> bool {
+    let mut cmd = tokio::process::Command::new("virsh");
+    cmd.args(["--connect", uri, "domstats"]);
+
+    let Ok(Ok(output)) = tokio::time::timeout(Duration::from_secs(5), cmd.output()).await else {
+        return false;
+    };
+
+    output.status.success()
+        && String::from_utf8_lossy(&output.stdout).contains("Domain: '")
+}
+
+/// Resolve the libvirt connection URI.
+async fn resolve_virsh_uri() -> Option<String> {
+    // 1. Explicit env var — trust it unconditionally
+    if let Ok(uri) = std::env::var("LIBVIRT_DEFAULT_URI") {
+        if !uri.is_empty() {
+            tracing::info!("Using LIBVIRT_DEFAULT_URI from environment: {}", uri);
+            return Some(uri);
+        }
+    }
+
+    // 2. Probe qemu:///system (where vagrant-libvirt VMs always live).
+    //    This is the common case when the env var is missing (dev-hud, systemd, etc.)
+    let system_uri = "qemu:///system";
+    if virsh_has_domains(system_uri).await {
+        tracing::info!("Probed {} — found domains, using it", system_uri);
+        return Some(system_uri.to_string());
+    }
+
+    // 3. Even if no domains are running right now on system, prefer it if it connects
+    if virsh_version_ok(Some(system_uri)).await {
+        tracing::info!("Probed {} — connectable (no domains yet), using it", system_uri);
+        return Some(system_uri.to_string());
+    }
+
+    // 4. Last resort: ask virsh for its default (likely qemu:///session)
     let output = tokio::time::timeout(
         Duration::from_secs(5),
         tokio::process::Command::new("virsh")
-            .arg("domstats")
+            .arg("uri")
             .output(),
     )
     .await
-    .context("virsh domstats timed out")?
-    .context("Failed to run virsh domstats")?;
+    .ok()?
+    .ok()?;
+
+    if output.status.success() {
+        let uri = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if !uri.is_empty() {
+            tracing::info!("Falling back to `virsh uri` default: {}", uri);
+            return Some(uri);
+        }
+    }
+
+    None
+}
+
+/// Fetch domstats for all running domains in a single virsh call.
+async fn fetch_all_domstats(provider: &ProviderSupport) -> Result<HashMap<String, DomStats>> {
+    let mut cmd = virsh_command(provider);
+    cmd.arg("domstats");
+
+    let output = tokio::time::timeout(Duration::from_secs(5), cmd.output())
+        .await
+        .context("virsh domstats timed out")?
+        .context("Failed to run virsh domstats")?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -361,19 +490,13 @@ pub async fn fetch_environments(
     if relist || lock_vm_cache().is_none() {
         let vms = read_machine_index(index_path)?;
 
-        // Prune CPU_PREV and UPTIME_TRACKER for disappeared domains
+        // Prune caches for domains that disappeared from the machine index
         let current_domains: std::collections::HashSet<String> =
             vms.iter().map(|v| v.domain_name.clone()).collect();
 
         {
             let mut cpu_guard = lock_cpu_prev();
             if let Some(map) = cpu_guard.as_mut() {
-                map.retain(|k, _| current_domains.contains(k));
-            }
-        }
-        {
-            let mut uptime_guard = lock_uptime();
-            if let Some(map) = uptime_guard.as_mut() {
                 map.retain(|k, _| current_domains.contains(k));
             }
         }
@@ -400,7 +523,7 @@ pub async fn fetch_environments(
 
     // Fetch domstats (single call for all domains)
     let domstats = if provider_support.has_virsh {
-        match fetch_all_domstats().await {
+        match fetch_all_domstats(provider_support).await {
             Ok(stats) => stats,
             Err(e) => {
                 tracing::warn!("virsh domstats failed: {}", e);
@@ -434,34 +557,39 @@ pub async fn fetch_environments(
 
         let running = effective_state == "running";
 
-        // Track uptime (first-observed running)
-        {
-            let mut uptime_guard = lock_uptime();
-            let map = uptime_guard.get_or_insert_with(HashMap::new);
-            if running {
-                map.entry(vm.domain_name.clone()).or_insert(now);
-            } else {
-                map.remove(&vm.domain_name);
-            }
-        }
-
-        // Track state changes
+        // Track state changes for LAST-CHG column.
+        // On first observation we record the state but do NOT emit a change event,
+        // so LAST-CHG starts as "-" rather than "0m" for pre-existing VMs.
         {
             let mut state_guard = lock_last_state();
             let state_map = state_guard.get_or_insert_with(HashMap::new);
             let prev_state = state_map.get(&vm.domain_name);
-            if prev_state.map(|s| s != &effective_state).unwrap_or(true) {
-                // State changed
-                let mut change_guard = lock_last_change();
-                let change_map = change_guard.get_or_insert_with(HashMap::new);
-                change_map.insert(vm.domain_name.clone(), now);
+            match prev_state {
+                Some(prev) if prev != &effective_state => {
+                    // Actual state transition — record change time
+                    let mut change_guard = lock_last_change();
+                    let change_map = change_guard.get_or_insert_with(HashMap::new);
+                    change_map.insert(vm.domain_name.clone(), now);
+                }
+                None => {
+                    // First observation — just record state, no change event
+                }
+                _ => {
+                    // Same state — no change
+                }
             }
             state_map.insert(vm.domain_name.clone(), effective_state.clone());
         }
 
-        let started_at = lock_uptime()
-            .as_ref()
-            .and_then(|m| m.get(&vm.domain_name).copied());
+        // TIME-UP: read real VM start time from the libvirt PID file.
+        // This gives the actual boot time (Unix epoch seconds), surviving
+        // vagrant-status restarts. Falls back to None if the PID file
+        // is missing (VM not running or no libvirt access).
+        let started_at = if running {
+            get_domain_start_time(&vm.domain_name)
+        } else {
+            None
+        };
 
         let (cpu_percent, cpus, mem_bytes, mem_limit, net_rx, net_tx, blk_read, blk_write) =
             if let Some(s) = stats {
@@ -550,7 +678,7 @@ pub async fn fetch_environments(
         .into_iter()
         .map(|(name, (path, provider, vms))| {
             let mut env = VagrantEnvironment::aggregate(name, path, provider, vms);
-            // Set newest_started_at from LAST_CHANGE tracker
+            // Set newest_started_at from LAST_CHANGE tracker (in-process Instants)
             let change_guard = lock_last_change();
             if let Some(change_map) = change_guard.as_ref() {
                 let latest_change = env

@@ -165,16 +165,18 @@ fn build_row<'a>(env: &VagrantEnvironment, columns: &ColumnVisibility) -> Row<'a
         cells.push(Cell::from(io_str));
     }
     if columns.time_up {
+        // TIME-UP: real VM uptime from PID file epoch timestamp
         let time_str = env
             .oldest_started_at
-            .map(|started| model::uptime_str(started.elapsed()))
+            .map(model::uptime_str_from_epoch)
             .unwrap_or_else(|| "-".to_string());
         cells.push(Cell::from(time_str));
     }
     if columns.last_chg {
+        // LAST-CHG: in-process state transition tracking (resets on restart)
         let chg_str = env
             .newest_started_at
-            .map(|started| model::uptime_str(started.elapsed()))
+            .map(model::uptime_str_from_instant)
             .unwrap_or_else(|| "-".to_string());
         cells.push(Cell::from(chg_str));
     }
