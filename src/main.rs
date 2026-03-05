@@ -21,7 +21,7 @@ use event::AppEvent;
 #[tokio::main]
 async fn main() -> Result<()> {
     // File-based logging (TUI owns stdout)
-    let file_appender = rolling::never(".", "vagrant-status.log");
+    let file_appender = rolling::never(".", "vagrant-top.log");
     let (non_blocking, _guard) = tracing_appender::non_blocking(file_appender);
     fmt()
         .with_env_filter(EnvFilter::from_default_env())
@@ -29,7 +29,7 @@ async fn main() -> Result<()> {
         .with_ansi(false)
         .init();
 
-    tracing::info!("vagrant-status starting");
+    tracing::info!("vagrant-top starting");
 
     // Restore terminal on panic so it doesn't get stuck in raw mode
     let default_hook = std::panic::take_hook();

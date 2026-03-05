@@ -60,7 +60,7 @@ pub struct VagrantEnvironment {
     /// Determines the TIME-UP column — how long the environment has been up.
     pub oldest_started_at: Option<u64>,
     /// Most recent state change observed (in-process Instant).
-    /// Determines the LAST-CHG column — resets when vagrant-status restarts.
+    /// Determines the LAST-CHG column — resets when vagrant-top restarts.
     pub newest_started_at: Option<Instant>,
 }
 

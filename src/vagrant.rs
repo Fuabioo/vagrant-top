@@ -22,7 +22,7 @@ static CPU_PREV: Mutex<Option<HashMap<String, (u64, Instant)>>> = Mutex::new(Non
 static LAST_STATE: Mutex<Option<HashMap<String, String>>> = Mutex::new(None);
 
 /// Last state change time per domain (in-process Instant).
-/// Resets when vagrant-status restarts. Only updated on actual state transitions,
+/// Resets when vagrant-top restarts. Only updated on actual state transitions,
 /// NOT on first observation (avoids showing "0m" for every VM at startup).
 static LAST_CHANGE: Mutex<Option<HashMap<String, Instant>>> = Mutex::new(None);
 
@@ -583,7 +583,7 @@ pub async fn fetch_environments(
 
         // TIME-UP: read real VM start time from the libvirt PID file.
         // This gives the actual boot time (Unix epoch seconds), surviving
-        // vagrant-status restarts. Falls back to None if the PID file
+        // vagrant-top restarts. Falls back to None if the PID file
         // is missing (VM not running or no libvirt access).
         let started_at = if running {
             get_domain_start_time(&vm.domain_name)
