@@ -1,0 +1,99 @@
+version: 2
+
+project_name: vagrant-top
+
+release:
+  draft: false
+  prerelease: auto
+  mode: replace
+  make_latest: true
+  name_template: "v{{ .Version }}"
+  header: |
+    ## vagrant-top {{ .Version }}
+
+    **A TUI for monitoring Vagrant virtual machines.**
+  footer: |
+    ## Installation
+
+    **Homebrew:**
+    ```bash
+    brew tap Fuabioo/tap
+    brew install vagrant-top
+    ```
+
+    **Cargo:**
+    ```bash
+    cargo install vagrant-top
+    ```
+
+    **Binary:**
+    Download the archive for your platform from the assets below, extract, and place `vagrant-top` in your `$PATH`.
+
+    ---
+    **Full Changelog**: https://github.com/Fuabioo/vagrant-top/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+builds:
+  - id: vagrant-top
+    builder: rust
+    targets:
+      - x86_64-unknown-linux-gnu
+      - aarch64-unknown-linux-gnu
+      - x86_64-apple-darwin
+      - aarch64-apple-darwin
+
+archives:
+  - formats:
+      - tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- title .Os }}_
+      {{- if eq .Arch "386" }}i386
+      {{- else }}{{ .Arch }}{{ end }}
+    files:
+      - README.md
+      - LICENSE*
+
+homebrew_casks:
+  - repository:
+      owner: Fuabioo
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/Fuabioo/vagrant-top"
+    description: "vagrant-top - A TUI for monitoring Vagrant virtual machines."
+    license: "MIT"
+
+checksum:
+  name_template: "checksums.txt"
+
+snapshot:
+  version_template: "{{ .Tag }}-next"
+
+changelog:
+  use: github
+  format: "{{ .SHA }}: {{ .Message }} (@{{ .AuthorUsername }})"
+  sort: asc
+  filters:
+    exclude:
+      - "skip ci"
+      - "skip-ci"
+      - "^docs:"
+      - "^test:"
+  groups:
+    - title: "Features"
+      regexp: "(?i).*(feat|add|implement|create|initial|new).*"
+      order: 0
+    - title: "Bug fixes"
+      regexp: "(?i).*(fix|resolve|correct|patch|bug).*"
+      order: 1
+    - title: "Documentation"
+      regexp: "(?i).*(docs|documentation|readme).*"
+      order: 2
+    - title: "Improvements"
+      regexp: "(?i).*(improve|enhance|optimize|update|upgrade).*"
+      order: 3
+    - title: "Cleanup"
+      regexp: "(?i).*(cleanup|clean|remove|delete|refactor).*"
+      order: 4
+    - title: "Others"
+      order: 999
